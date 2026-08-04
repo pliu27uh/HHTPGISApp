@@ -3,3 +3,4 @@ geopandas
 folium
 openpyxl
 plotly
+scipy

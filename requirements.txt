@@ -4,3 +4,4 @@ folium
 openpyxl
 plotly
 scipy
+streamlit_folium

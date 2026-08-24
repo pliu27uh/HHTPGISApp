@@ -5,3 +5,4 @@ openpyxl
 plotly
 scipy
 streamlit_folium
+win32com.client

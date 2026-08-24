@@ -9,8 +9,7 @@ import folium
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
-import win32com.client
-import pythoncom
+import xlwings as xw
 
 from scipy.spatial import cKDTree
 from streamlit_folium import st_folium
@@ -157,51 +156,55 @@ def run_hdsam_workflow(fleet_size):
     """
     Runs the HDSAM Excel model for both Liquid and Gas (Tube-Trailer) scenarios.
     """
-    pythoncom.CoInitialize() 
-    
-    excel = win32com.client.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-
     file_path = r"C:/Users/pliu27/Downloads/Hydrogen_Delivery_Scenario_Analysis_Model_(HDSAM)_V5.5.xlsm"
     
-    try:
-        wb = excel.Workbooks.Open(file_path)
-    except Exception as e:
-        st.error(f"Could not open HDSAM file: {e}")
-        return {"liquid": {}, "gas": {}}
-
-    ws_scenario = wb.Sheets("Scenario")
-    ws_results = wb.Sheets("Results Summary")
-
+    # Initialize a hidden Excel application
+    app = xw.App(visible=False, add_book=False)
+    app.display_alerts = False
+    
     results = {"liquid": {}, "gas": {}}
 
     try:
+        wb = app.books.open(file_path)
+    except Exception as e:
+        st.error(f"Could not open HDSAM file: {e}")
+        app.quit()
+        return results
+
+    try:
+        ws_scenario = wb.sheets["Scenario"]
+        ws_results = wb.sheets["Results Summary"]
+
         # --- PASS 1: LIQUID ---
-        ws_scenario.Range("H4").Value = fleet_size
-        ws_scenario.OLEObjects("cmdCalculate").Object.Value = True
+        ws_scenario.range("H4").value = fleet_size
+        
+        # xlwings exposes the win32com object via .api, allowing us to click the button
+        ws_scenario.api.OLEObjects("cmdCalculate").Object.Value = True
         
         # EXTRACT DISPENSING RATE FROM O22
-        dispensing_rate = ws_scenario.Range("O22").Value
+        dispensing_rate = ws_scenario.range("O22").value
         results["dispensing_rate"] = dispensing_rate
         
-        raw_data = ws_results.UsedRange.Value
+        # .value on a range returns a nested list, equivalent to UsedRange.Value
+        raw_data = ws_results.used_range.value
         results["liquid"] = _extract_hdsam_costs(raw_data)
 
         # --- PASS 2: GAS (Tube-Trailer) ---
-        ws_scenario.Range("E2").Value = "Tube-Trailer"
-        ws_scenario.Range("F2").Value = "Tube-Trailer"
-        ws_scenario.OLEObjects("cmdCalculate").Object.Value = True
+        ws_scenario.range("E2").value = "Tube-Trailer"
+        ws_scenario.range("F2").value = "Tube-Trailer"
         
-        raw_data = ws_results.UsedRange.Value
+        # Trigger the macro calculation again
+        ws_scenario.api.OLEObjects("cmdCalculate").Object.Value = True
+        
+        raw_data = ws_results.used_range.value
         results["gas"] = _extract_hdsam_costs(raw_data)
 
     except Exception as e:
         st.error(f"HDSAM Execution Error: {e}")
     finally:
-        wb.Close(False)
-        excel.Quit()
-        pythoncom.CoUninitialize()
+        # Clean up
+        wb.close()
+        app.quit()
 
     return results
 

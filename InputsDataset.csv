@@ -1,17 +1,18 @@
-,Unnamed: 0,Variable Name,Variable Unit,SMR,SMRCC,Electrolysis,Onsite SMR,Onsite Electrolysis,Table
-0,0,Tested Facility Expected Life,Years,40.0,40.0,50.0,20.0,20.0,Assigned Value
-1,1,Natural Gas Usage,MSCF/t H₂,170.236,181.011,,168.081,,Assigned Value
-2,2,Electricity usage,kWh/t H₂,130.0,1500.0,55500.0,1110.0,55800.0,Assigned Value
-3,3,Water usage,gal/t H₂,4344.0,8130.0,3780.0,5770.0,3780.0,Assigned Value
-4,4,CO₂ Production,t CO₂/t H₂,10.0,10.0,10.0,10.0,10.0,Assigned Value
-5,5,Yearly Fixed (plant),$million/year,13.6,32.7,4.8,,,Assigned Value
-6,6,"Yearly, Non-Feedstock Other Variable Costs",$million/year,2.7,42.1,,,,Assigned Value
-7,7,Facility Production,t H₂/d,434.7,434.7,54.8,1.3,1.5,Assigned Value
-8,8,Facility Capital Cost,$million,283.7,802.8,86.4,1.8,3.1,Assigned Value
-9,9,Cost sensitivity ,%,100.0,100.0,100.0,100.0,100.0,Financial Input Values
-10,10,SL Depreciation,Years,20.0,20.0,20.0,20.0,20.0,Financial Input Values
-11,11,Cost of Equity,%,10.0,10.0,10.0,10.0,10.0,Financial Input Values
-12,12,Target Main Equity Percentage,%,100.0,100.0,100.0,100.0,100.0,Financial Input Values
-13,13,Revenue,%,1.0,1.0,1.0,1.0,1.0,Financial Input Values
-14,14,Operating Costs,%,1.0,1.0,1.0,1.0,1.0,Financial Input Values
-15,15,Senior Debt Term,Years,25.0,25.0,25.0,25.0,25.0,Financial Input Values
+,Unnamed: 0,Variable Name,Variable Unit,SMR,SMRCC,Electrolysis,Onsite SMR,Onsite Electrolysis,SMR Liquid,SMRCC Liquid,Electrolysis Liquid,Table
+0,0,Tested Facility Expected Life,Years,40,40,50,20,20,40,40,50,Assigned Value
+1,1,Natural Gas Usage,MSCF/t H₂,170.236,181.011,,168.081,,170.236,181.011,,Assigned Value
+2,2,Electricity usage,kWh/t H₂,130,1500,55500,1110,55800,130,1500,55500,Assigned Value
+3,3,Water usage,gal/t H₂,4344,8130,3780,5770,3780,4344,8130,3780,Assigned Value
+4,4,CO₂ Production,t CO₂/t H₂,10,10,10,10,10,10,10,10,Assigned Value
+5,5,Yearly Fixed (plant),$million/year,13.6,32.7,4.8,,,13.6,32.7,4.8,Assigned Value
+6,6,"Yearly, Non-Feedstock Other Variable Costs",$million/year,2.7,42.1,,,,2.7,42.1,,Assigned Value
+7,7,Facility Production,t H₂/d,434.7,434.7,54.8,1.3,1.5,434.7,434.7,54.8,Assigned Value
+8,8,Facility Capital Cost,$million,283.7,802.8,86.4,1.8,3.1,283.7,802.8,86.4,Assigned Value
+9,9,Annual Average Daily Dispensing Rate, kg H₂/d,720,720,720,720,720,720,720,720,Assigned Value
+10,10,Cost sensitivity ,%,20,20,20,20,20,20,20,20,Financial Input Values
+11,11,SL Depreciation,Years,10,10,10,10,10,10,10,10,Financial Input Values
+12,12,Cost of Equity,%,100,100,100,100,100,100,100,100,Financial Input Values
+13,13,Target Main Equity Percentage,%,1,1,1,1,1,1,1,1,Financial Input Values
+14,14,Revenue,%,1,1,1,1,1,1,1,1,Financial Input Values
+15,15,Operating Costs,%,25,25,25,25,25,25,25,25,Financial Input Values
+16,16,Senior Debt Term,Years,,,,,,,,,

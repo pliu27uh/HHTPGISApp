@@ -9,6 +9,8 @@ import folium
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
+import win32com.client
+import pythoncom
 
 from scipy.spatial import cKDTree
 from streamlit_folium import st_folium
@@ -19,9 +21,9 @@ from streamlit_folium import st_folium
 # ==========================================================
 
 st.set_page_config(
-    page_title="National Hydrogen Transportation Fuel Supply (Under Development - for Education Purposes Only)",
+    page_title="National Hydrogen Transportation Fuel Supply",
     layout="wide",
-    initial_sidebar_state="collapsed"  # Collapses the sidebar on initial page load
+    initial_sidebar_state="collapsed"
 )
 
 
@@ -37,9 +39,8 @@ html, body, [class*="css"] {
     font-size: 14pt;
 }
 
-/* Reduce Streamlit main title font size */
 h1 {
-    font-size: 16pt !important; /* Adjust font size value as needed */
+    font-size: 16pt !important; 
 }
 
 table {
@@ -102,10 +103,6 @@ state_centroid_tree = cKDTree(STATE_CENTROID_COORDS)
 
 
 def normalize_state_str(st_input):
-    """
-    Normalizes state input strings (e.g. 'Texas', 'Texas Gulf', 'CA', 'California')
-    to a two-letter postal code abbreviation.
-    """
     if not st_input or pd.isna(st_input):
         return None
     st_clean = str(st_input).strip().upper()
@@ -128,13 +125,9 @@ def normalize_state_str(st_input):
 
 
 def find_column(columns, target_keywords):
-    """
-    Finds a column name matching search terms, ignoring case, underscores, and spacing.
-    """
     if isinstance(target_keywords, str):
         target_keywords = [target_keywords]
 
-    # Precise Case-Insensitive Match
     for col in columns:
         col_clean = str(col).strip().lower().replace("_", " ")
         for kw in target_keywords:
@@ -142,7 +135,6 @@ def find_column(columns, target_keywords):
             if col_clean == kw_clean:
                 return col
 
-    # Substring Match
     for col in columns:
         col_clean = str(col).strip().lower().replace("_", " ")
         for kw in target_keywords:
@@ -153,13 +145,78 @@ def find_column(columns, target_keywords):
 
 
 def fmt_money(v):
-    """
-    Globally available currency formatter for tables and tooltips.
-    """
     if pd.isna(v) or v == 0.0:
         return "N/A"
     return f"${v:.3f}" if abs(v) < 0.1 else f"${v:.2f}"
 
+# ==========================================================
+# HDSAM EXCEL AUTOMATION FUNCTIONS
+# ==========================================================
+
+def run_hdsam_workflow(fleet_size):
+    """
+    Runs the HDSAM Excel model for both Liquid and Gas (Tube-Trailer) scenarios.
+    """
+    pythoncom.CoInitialize() 
+    
+    excel = win32com.client.DispatchEx("Excel.Application")
+    excel.Visible = False
+    excel.DisplayAlerts = False
+
+    file_path = r"C:/Users/pliu27/Downloads/Hydrogen_Delivery_Scenario_Analysis_Model_(HDSAM)_V5.5.xlsm"
+    
+    try:
+        wb = excel.Workbooks.Open(file_path)
+    except Exception as e:
+        st.error(f"Could not open HDSAM file: {e}")
+        return {"liquid": {}, "gas": {}}
+
+    ws_scenario = wb.Sheets("Scenario")
+    ws_results = wb.Sheets("Results Summary")
+
+    results = {"liquid": {}, "gas": {}}
+
+    try:
+        # --- PASS 1: LIQUID ---
+        ws_scenario.Range("H4").Value = fleet_size
+        ws_scenario.OLEObjects("cmdCalculate").Object.Value = True
+        
+        # EXTRACT DISPENSING RATE FROM O22
+        dispensing_rate = ws_scenario.Range("O22").Value
+        results["dispensing_rate"] = dispensing_rate
+        
+        raw_data = ws_results.UsedRange.Value
+        results["liquid"] = _extract_hdsam_costs(raw_data)
+
+        # --- PASS 2: GAS (Tube-Trailer) ---
+        ws_scenario.Range("E2").Value = "Tube-Trailer"
+        ws_scenario.Range("F2").Value = "Tube-Trailer"
+        ws_scenario.OLEObjects("cmdCalculate").Object.Value = True
+        
+        raw_data = ws_results.UsedRange.Value
+        results["gas"] = _extract_hdsam_costs(raw_data)
+
+    except Exception as e:
+        st.error(f"HDSAM Execution Error: {e}")
+    finally:
+        wb.Close(False)
+        excel.Quit()
+        pythoncom.CoUninitialize()
+
+    return results
+
+def _extract_hdsam_costs(raw_data):
+    """Helper to parse the total cost row from the HDSAM results tab."""
+    if not raw_data:
+        return {}
+    for i, row in enumerate(raw_data):
+        cleaned_row = [cell for cell in row if cell is not None and str(cell).strip() != "$"]
+        if cleaned_row and "Total Cost" in str(cleaned_row[0]):
+            header_row = [cell for cell in raw_data[i - 1] if cell is not None and str(cell).strip() != ""]
+            headers = [str(h).strip() for h in header_row]
+            values = cleaned_row[1:] 
+            return dict(zip(headers, values))
+    return {}
 
 # ==========================================================
 # ARC GIS PIPELINE & SALINE AQUIFER SERVICES
@@ -174,7 +231,6 @@ SALINE_SHP_PATH = "saline_aquifers_layer.shp"
 
 @st.cache_data(ttl=86400)
 def load_pipeline_layer():
-    # Load directly from local shapefile if present
     if os.path.exists(PIPELINE_SHP_PATH):
         try:
             gdf = gpd.read_file(PIPELINE_SHP_PATH)
@@ -222,7 +278,6 @@ def load_pipeline_layer():
 
         geojson_data = {"type": "FeatureCollection", "features": features}
 
-        # Save to local shapefile for future fast-loading
         if features:
             try:
                 gdf = gpd.GeoDataFrame.from_features(features)
@@ -238,11 +293,6 @@ def load_pipeline_layer():
 
 @st.cache_data(ttl=86400)
 def load_saline_aquifers_layer():
-    """
-    Loads NATCARB Saline Aquifer Polygons from local shapefile if available,
-    otherwise fetches from DOE NETL ArcGIS REST Service and exports to shapefile.
-    """
-    # Load directly from local shapefile if present
     if os.path.exists(SALINE_SHP_PATH):
         try:
             gdf = gpd.read_file(SALINE_SHP_PATH)
@@ -263,7 +313,6 @@ def load_saline_aquifers_layer():
             data = response.json()
             features = data.get("features", [])
 
-            # Save to local shapefile for future fast-loading
             if features:
                 try:
                     gdf = gpd.GeoDataFrame.from_features(features)
@@ -301,14 +350,11 @@ def pipeline_style(feature):
 
 
 def saline_style(feature):
-    """
-    Blue-green filled polygons with 30% fill opacity for NATCARB Saline Aquifers.
-    """
     return {
-        "fillColor": "#379E9B",  # Blue-Green / Teal
-        "color": "#005F56",      # Stroke color
+        "fillColor": "#379E9B",
+        "color": "#005F56",
         "weight": 1,
-        "fillOpacity": 0.10,     # 30% fill opacity
+        "fillOpacity": 0.10,
         "opacity": 0.50,
     }
 
@@ -326,198 +372,30 @@ def load_projects():
     except FileNotFoundError:
         return pd.DataFrame({
             "Site": [
-                "Texas Gulf",
-                "California Central",
-                "Arizona Solar",
-                "Colorado Wind",
-                "Utah Hub",
-                "Nevada Desert",
-                "New Mexico Basin",
-                "Oklahoma Plains",
+                "Texas Gulf", "California Central", "Arizona Solar", "Colorado Wind",
+                "Utah Hub", "Nevada Desert", "New Mexico Basin", "Oklahoma Plains",
             ],
             "State": ["TX", "CA", "AZ", "CO", "UT", "NV", "NM", "OK"],
             "Latitude": [31.0, 36.8, 34.5, 39.1, 40.5, 37.5, 35.2, 35.4],
-            "Longitude": [
-                -99.0,
-                -119.5,
-                -111.8,
-                -105.5,
-                -111.9,
-                -116.5,
-                -106.6,
-                -97.5,
-            ],
-            "Electricity Price ($/kWh)": [
-                0.045,
-                0.065,
-                0.038,
-                0.042,
-                0.040,
-                0.055,
-                0.035,
-                0.039,
-            ],
-            "Water Price ($/gallon)": [
-                0.005,
-                0.008,
-                0.004,
-                0.005,
-                0.004,
-                0.007,
-                0.003,
-                0.005,
-            ],
-            "Natural Gas Price ($/MSCF)": [
-                4.2,
-                5.5,
-                4.8,
-                4.5,
-                4.0,
-                5.0,
-                3.8,
-                4.1,
-            ],
-            "CO₂ Storage Costs ($/kg H2)": [
-                0.02,
-                0.03,
-                0.02,
-                0.02,
-                0.01,
-                0.03,
-                0.01,
-                0.02,
-            ],
-            "CO₂ Transport Costs ($/kg H₂)": [
-                0.01,
-                0.02,
-                0.01,
-                0.01,
-                0.01,
-                0.02,
-                0.01,
-                0.01,
-            ],
-            "Gasoline Price ($/gal)": [
-                3.20,
-                3.80,
-                3.40,
-                3.30,
-                3.10,
-                3.60,
-                3.00,
-                3.25,
-            ],
-            "Diesel Price ($/gal)": [
-                3.90,
-                4.30,
-                4.10,
-                4.00,
-                3.80,
-                4.20,
-                3.70,
-                3.90,
-            ],
+            "Longitude": [-99.0, -119.5, -111.8, -105.5, -111.9, -116.5, -106.6, -97.5],
+            "Electricity Price ($/kWh)": [0.045, 0.065, 0.038, 0.042, 0.040, 0.055, 0.035, 0.039],
+            "Water Price ($/gallon)": [0.005, 0.008, 0.004, 0.005, 0.004, 0.007, 0.003, 0.005],
+            "Natural Gas Price ($/MSCF)": [4.2, 5.5, 4.8, 4.5, 4.0, 5.0, 3.8, 4.1],
+            "CO₂ Storage Costs ($/kg H2)": [0.02, 0.03, 0.02, 0.02, 0.01, 0.03, 0.01, 0.02],
+            "CO₂ Transport Costs ($/kg H₂)": [0.01, 0.02, 0.01, 0.01, 0.01, 0.02, 0.01, 0.01],
+            "Gasoline Price ($/gal)": [3.20, 3.80, 3.40, 3.30, 3.10, 3.60, 3.00, 3.25],
+            "Diesel Price ($/gal)": [3.90, 4.30, 4.10, 4.00, 3.80, 4.20, 3.70, 3.90],
             "CNG Price ($/GGE)": [2.50, 3.10, 2.70, 2.60, 2.40, 2.90, 2.30, 2.50],
-            "BEV CO₂ Emissions (lb CO₂/kWh)": [
-                0.85,
-                0.92,
-                0.75,
-                0.80,
-                0.78,
-                0.95,
-                0.88,
-                0.82,
-            ],
-            "ICEV CO2 Emissions per mile (kg/mile)": [
-                1.45,
-                1.50,
-                1.40,
-                1.42,
-                1.38,
-                1.52,
-                1.48,
-                1.41,
-            ],
-            "Levelized Cost of Transport (LCT) ($/kg H₂)": [
-                0.45,
-                0.60,
-                0.50,
-                0.48,
-                0.40,
-                0.55,
-                0.38,
-                0.42,
-            ],
-            "Levelized Cost of Refueling Stations (LCRS) ($/kg H₂)": [
-                1.20,
-                1.50,
-                1.30,
-                1.25,
-                1.15,
-                1.40,
-                1.10,
-                1.18,
-            ],
-            "Formation Name and Identifier": [
-                "Frio Fm",
-                "Monterey Shale",
-                "Luke Basin",
-                "Denver Basin",
-                "Paradox Basin",
-                "Nevada Play",
-                "San Juan",
-                "Anadarko",
-            ],
-            "Lithology": [
-                "Sandstone",
-                "Shale",
-                "Salt Dome",
-                "Sandstone",
-                "Limestone",
-                "Volcanic Tuff",
-                "Sandstone",
-                "Shale",
-            ],
-            "Saline Aquifer Location": [
-                "TX Gulf Coast",
-                "CA Central Valley",
-                "AZ Deep Saline",
-                "CO Front Range",
-                "UT Paradox",
-                "NV Basin Fill",
-                "NM San Juan",
-                "OK Anadarko",
-            ],
-            "Pipeline Operator": [
-                "Enbridge H2",
-                "Kinder Morgan",
-                "Energy Transfer",
-                "TC Energy",
-                "Williams Cos",
-                "Oneok Inc",
-                "Enterprise Products",
-                "Plains All American",
-            ],
-            "Pipe Type": [
-                "Transmission",
-                "Distribution",
-                "Transmission",
-                "Transmission",
-                "Gathering",
-                "Transmission",
-                "Gathering",
-                "Transmission",
-            ],
-            "Pipeline distances (mi)": [
-                14.2,
-                38.5,
-                8.1,
-                22.4,
-                11.7,
-                44.0,
-                6.3,
-                18.9,
-            ],
+            "BEV CO₂ Emissions (lb CO₂/kWh)": [0.85, 0.92, 0.75, 0.80, 0.78, 0.95, 0.88, 0.82],
+            "ICEV CO2 Emissions per mile (kg/mile)": [1.45, 1.50, 1.40, 1.42, 1.38, 1.52, 1.48, 1.41],
+            "Levelized Cost of Transport (LCT) ($/kg H₂)": [0.45, 0.60, 0.50, 0.48, 0.40, 0.55, 0.38, 0.42],
+            "Levelized Cost of Refueling Stations (LCRS) ($/kg H₂)": [1.20, 1.50, 1.30, 1.25, 1.15, 1.40, 1.10, 1.18],
+            "Formation Name and Identifier": ["Frio Fm", "Monterey Shale", "Luke Basin", "Denver Basin", "Paradox Basin", "Nevada Play", "San Juan", "Anadarko"],
+            "Lithology": ["Sandstone", "Shale", "Salt Dome", "Sandstone", "Limestone", "Volcanic Tuff", "Sandstone", "Shale"],
+            "Saline Aquifer Location": ["TX Gulf Coast", "CA Central Valley", "AZ Deep Saline", "CO Front Range", "UT Paradox", "NV Basin Fill", "NM San Juan", "OK Anadarko"],
+            "Pipeline Operator": ["Enbridge H2", "Kinder Morgan", "Energy Transfer", "TC Energy", "Williams Cos", "Oneok Inc", "Enterprise Products", "Plains All American"],
+            "Pipe Type": ["Transmission", "Distribution", "Transmission", "Transmission", "Gathering", "Transmission", "Gathering", "Transmission"],
+            "Pipeline distances (mi)": [14.2, 38.5, 8.1, 22.4, 11.7, 44.0, 6.3, 18.9],
         })
 
 
@@ -632,7 +510,6 @@ cng_state_col = find_column(
 if not cng_df.empty and cng_price_col:
     cng_valid = cng_df.copy()
     
-    # Strip currency symbols and whitespace if string
     if cng_valid[cng_price_col].dtype == object:
         cng_valid[cng_price_col] = (
             cng_valid[cng_price_col]
@@ -645,7 +522,6 @@ if not cng_df.empty and cng_price_col:
     cng_valid[cng_price_col] = pd.to_numeric(cng_valid[cng_price_col], errors="coerce")
     cng_valid = cng_valid.dropna(subset=[cng_price_col])
     
-    # Validate realistic CNG price range ($0.50 - $15.00/GGE)
     cng_valid = cng_valid[(cng_valid[cng_price_col] >= 0.50) & (cng_valid[cng_price_col] <= 15.00)]
     
     if cng_valid.empty:
@@ -655,14 +531,9 @@ else:
 
 
 def get_cng_price_by_closest_state(lat=None, lon=None, state_code=None, fallback_price=2.50):
-    """
-    Retrieves the CNG fuel price from cng_stations_all_states.csv matching the selected state code
-    or geographically closest US state centroid.
-    """
     if cng_valid.empty or cng_price_col is None:
         return fallback_price
 
-    # Strategy 1: Match directly by state abbreviation or state name
     if state_code:
         st_abbr = normalize_state_str(state_code)
         if st_abbr and cng_state_col:
@@ -674,7 +545,6 @@ def get_cng_price_by_closest_state(lat=None, lon=None, state_code=None, fallback
                 if not pd.isna(avg_price) and 0.50 <= avg_price <= 15.00:
                     return float(avg_price)
 
-    # Strategy 2: Determine closest US state spatially using coordinates (lat, lon)
     if lat is not None and lon is not None and not (pd.isna(lat) or pd.isna(lon)):
         try:
             _, idx = state_centroid_tree.query([lat, lon])
@@ -751,7 +621,6 @@ op_col = find_column(projects.columns, ["Pipeline Operator", "Operator"])
 type_col = find_column(projects.columns, ["Pipe Type", "Type"])
 dist_col = find_column(projects.columns, ["Pipeline distances (mi)", "Distance"])
 
-# Spatial KDTree Setup
 coords_df = projects[[lat_col, lon_col]].dropna()
 tree = cKDTree(coords_df.values)
 
@@ -773,7 +642,6 @@ if "clicked_location" not in st.session_state:
 if "map_clicked" not in st.session_state:
     st.session_state.map_clicked = False
 
-# --- PERSISTENT MAP LAYER STATE ---
 if "show_saline" not in st.session_state:
     st.session_state.show_saline = True
 
@@ -846,6 +714,16 @@ st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
+st.sidebar.subheader("HDSAM Model Integration")
+fleet_size = st.sidebar.number_input("Fleet Size", value=30, step=1)
+
+if st.sidebar.button("Run HDSAM Model"):
+    with st.spinner("Executing HDSAM Excel Model (Liquid & Gas)..."):
+        hdsam_results = run_hdsam_workflow(fleet_size)
+        st.session_state.hdsam_results = hdsam_results
+        st.success("HDSAM run complete! Charts updated.")
+
+st.sidebar.markdown("---")
 st.sidebar.subheader("Price Competitive Band Multipliers")
 
 with st.sidebar.expander("Adjust Multipliers", expanded=True):
@@ -908,7 +786,8 @@ component_order = [
     "Capital Costs ($/kg H₂)",
     "CO₂ Storage Costs ($/kg H₂)",
     "CO₂ Transport Costs ($/kg H₂)",
-    "Levelized Cost of Transport (LCT) ($/kg H₂)",
+    "Levelized Cost of Liquefaction ($/kg H₂)",
+    "Levelized Cost of Transport (LCT) ($/kg H₂)",  
     "Levelized Cost of Refueling Stations (LCRS) ($/kg H₂)",
 ]
 
@@ -942,6 +821,8 @@ def calculate_row_smrcc_total(row_data, columns):
             comp_display = "LCT"
         elif any(k in col_upper for k in ["LCRS", "REFUELING", "STATION"]):
             comp_display = "LCRS"
+        elif any(k in col_upper for k in ["Liquefaction"]):
+            comp_display = "Liquefaction"
 
         if not comp_display or any(
             ex in col_upper for ex in ["LCO ", "LCCO", "LFC "]
@@ -984,12 +865,13 @@ has_parsed_data = any(
 # MAIN TABBED INTERFACE LAYOUT
 # ==========================================================
 
-tab_overview, tab_co2, tab_pathway, tab_values, tab_external = st.tabs([
+tab_overview, tab_co2, tab_pathway, tab_values, tab_external, tab_external2 = st.tabs([
     "Home",
     "CO₂ Emissions",
     "Analysis",
     "Values",
     "Full TCO Model",
+    "Drive Cycle Model"
 ])
 
 
@@ -1000,7 +882,6 @@ tab_overview, tab_co2, tab_pathway, tab_values, tab_external = st.tabs([
 with tab_overview:
     table_col, map_col = st.columns([1.8, 3.3])
 
-    # 1. SIDE METADATA TABLE
     with table_col:
         if st.session_state.map_clicked:
             city_col = find_column(
@@ -1119,7 +1000,6 @@ with tab_overview:
                 unsafe_allow_html=True,
             )
 
-# 2. FOLIUM GEOGRAPHIC MAP LAYER
     with map_col:
         m = folium.Map(
             location=[37.8283, -97.0795],
@@ -1136,24 +1016,22 @@ with tab_overview:
             control=False,
         ).add_to(m)
 
-        # 2a. Saline Aquifers Layer (Blue-Green filled, 30% Opacity)
         saline_aquifers = load_saline_aquifers_layer()
         if saline_aquifers:
             folium.GeoJson(
                 saline_aquifers,
                 name="NATCARB Saline Aquifers",
                 style_function=saline_style,
-                show=st.session_state.show_saline,  # <--- Persisted state
+                show=st.session_state.show_saline,
             ).add_to(m)
 
-        # 2b. Natural Gas Pipeline Layer
         pipeline = load_pipeline_layer()
         if pipeline:
             folium.GeoJson(
                 pipeline,
-                name="Natural Gas Pipelines",
+                name="Natural Gas Pipelines (Red = Intrastate, Blue = Interstate)",
                 style_function=pipeline_style,
-                show=st.session_state.show_pipeline,  # <--- Persisted state
+                show=st.session_state.show_pipeline,
             ).add_to(m)
 
         avg_diesel_m = (diesel_low + diesel_high) / 2.0
@@ -1284,8 +1162,7 @@ with tab_overview:
             </div>
             """
 
-            # Invisible Square Bounding Box around location for hover/tooltip
-            sq_offset = 1  # Degree offset for square size
+            sq_offset = 1 
             square_bounds = [
                 [lat_val - sq_offset, lon_val - sq_offset],
                 [lat_val + sq_offset, lon_val + sq_offset],
@@ -1338,7 +1215,6 @@ with tab_overview:
                 st.session_state.map_clicked = True
                 st.rerun()
 
-    # 3. LCOH STACKED BAR CHART
     if st.session_state.map_clicked:
         component_colors = [
             "rgba(52, 58, 64, 0.70)",
@@ -1349,6 +1225,7 @@ with tab_overview:
             "rgba(0, 123, 255, 0.85)",
             "rgba(111, 66, 193, 0.75)",
             "rgba(253, 126, 20, 0.80)",
+            "rgba(217,2,125, 0.80)",
             "rgba(108, 117, 125, 0.75)",
             "rgba(255, 193, 7, 0.80)",
         ]
@@ -1396,6 +1273,7 @@ with tab_overview:
                 is_liquid_lcrs = "LIQUID" in col_upper and any(
                     k in col_upper for k in ["LCRS", "REFUELING", "STATION"]
                 )
+                is_liquefaction = "LIQUEFACTION" in col_upper
                 is_gas_lct = "LIQUID" not in col_upper and (
                     "LCT" in col_upper
                     or ("TRANSPORT" in col_upper and "CO2" not in col_upper)
@@ -1403,7 +1281,6 @@ with tab_overview:
                 is_gas_lcrs = "LIQUID" not in col_upper and any(
                     k in col_upper for k in ["LCRS", "REFUELING", "STATION"]
                 )
-
                 if any(k in col_upper for k in ["LFCKWH"]):
                     comp_display = "Electricity ($/kg H₂)"
                 elif any(k in col_upper for k in ["LFC O", "LFCH2O"]):
@@ -1423,6 +1300,8 @@ with tab_overview:
                     comp_display = "CO₂ Storage Costs ($/kg H₂)"
                 elif "CO2" in col_upper and "TRANSPORT" in col_upper:
                     comp_display = "CO₂ Transport Costs ($/kg H₂)"
+                elif is_liquefaction:
+                    comp_display = "Levelized Cost of Liquefaction ($/kg H₂)"                
                 elif is_liquid_lct or is_gas_lct:
                     comp_display = "Levelized Cost of Transport (LCT) ($/kg H₂)"
                 elif is_liquid_lcrs or is_gas_lcrs:
@@ -1445,7 +1324,7 @@ with tab_overview:
                     if "liquid" in col_lower:
                         matched_techs = ["SMRCC Liquid"]
                     else:
-                        if is_liquid_lct or is_liquid_lcrs:
+                        if is_liquid_lct or is_liquid_lcrs or is_liquefaction:
                             matched_techs = ["SMRCC Liquid"]
                         elif is_gas_lct or is_gas_lcrs:
                             matched_techs = ["SMRCC"]
@@ -1455,7 +1334,7 @@ with tab_overview:
                     if "liquid" in col_lower:
                         matched_techs = ["Electrolysis Liquid"]
                     else:
-                        if is_liquid_lct or is_liquid_lcrs:
+                        if is_liquid_lct or is_liquid_lcrs or is_liquefaction:
                             matched_techs = ["Electrolysis Liquid"]
                         elif is_gas_lct or is_gas_lcrs:
                             matched_techs = ["Electrolysis"]
@@ -1465,14 +1344,14 @@ with tab_overview:
                     if "liquid" in col_lower:
                         matched_techs = ["SMR Liquid"]
                     else:
-                        if is_liquid_lct or is_liquid_lcrs:
+                        if is_liquid_lct or is_liquid_lcrs or is_liquefaction:
                             matched_techs = ["SMR Liquid"]
                         elif is_gas_lct or is_gas_lcrs:
                             matched_techs = ["SMR"]
                         else:
                             matched_techs = ["SMR", "SMR Liquid"]
                 else:
-                    if is_liquid_lct or is_liquid_lcrs:
+                    if is_liquid_lct or is_liquid_lcrs or is_liquefaction:
                         matched_techs = [
                             "SMR Liquid",
                             "SMRCC Liquid",
@@ -1514,6 +1393,35 @@ with tab_overview:
             for c in components_set:
                 if c not in ordered_components:
                     ordered_components.append(c)
+
+            # --- HDSAM CHART OVERRIDES ---
+            if "hdsam_results" in st.session_state:
+                hdsam = st.session_state.hdsam_results
+                
+                # 1. Update Liquid Pathways
+                if "liquid" in hdsam and hdsam["liquid"]:
+                    liq_costs = hdsam["liquid"]
+                    hdsam_liquefier = float(liq_costs.get("Liquefier [$/kg]", 0.0))
+                    hdsam_liq_transport = float(liq_costs.get("Tractor-Trailer [$/kg]", 0.0)+liq_costs.get("Terminal [$/kg]", 0.0))
+                    hdsam_liq_refueling = float(liq_costs.get("Liquid Refueling Station [$/kg]", 0.0))
+                    
+                    for liq_tech in ["SMR Liquid", "SMRCC Liquid", "Electrolysis Liquid"]:
+                        if liq_tech in tech_values:
+                            tech_values[liq_tech]["Levelized Cost of Liquefaction ($/kg H₂)"] = hdsam_liquefier
+                            tech_values[liq_tech]["Levelized Cost of Transport (LCT) ($/kg H₂)"] = hdsam_liq_transport
+                            tech_values[liq_tech]["Levelized Cost of Refueling Stations (LCRS) ($/kg H₂)"] = hdsam_liq_refueling
+
+                # 2. Update Gas Pathways
+                if "gas" in hdsam and hdsam["gas"]:
+                    gas_costs = hdsam["gas"]
+                    hdsam_gas_transport = float(gas_costs.get("Sum [$/kg]", 0.0)-gas_costs.get("Refueling Station [$/kg]", 0.0))
+                    hdsam_gas_refueling = float(gas_costs.get("Refueling Station [$/kg]", 0.0))
+                    
+                    for gas_tech in ["SMR", "SMRCC", "Electrolysis"]:
+                        if gas_tech in tech_values:
+                            tech_values[gas_tech]["Levelized Cost of Transport (LCT) ($/kg H₂)"] = hdsam_gas_transport
+                            tech_values[gas_tech]["Levelized Cost of Refueling Stations (LCRS) ($/kg H₂)"] = hdsam_gas_refueling
+
 
             for comp in reversed(ordered_components):
                 y_vals = [tech_values[t].get(comp, 0.0) for t in ordered_techs]
@@ -1590,7 +1498,7 @@ with tab_overview:
                 "Price-Competitive Band - CNG",
                 v_cng * cng_low,
                 v_cng * cng_high,
-                "rgba(0,255,0,0.25)",
+                "rgba(0,255,0,1.0)",
             ),
             (
                 "Price-Competitive Band - Electricity",
@@ -1602,27 +1510,48 @@ with tab_overview:
                 "Price-Competitive Band - Diesel",
                 v_diesel * diesel_low,
                 v_diesel * diesel_high,
-                "rgba(220,0,0,0.25)",
+                "rgba(220,0,0,1.0)",
             ),
         ]
 
         for label, band_low, band_high, color in fuel_bands:
-            fig.add_hrect(
-                y0=band_low,
-                y1=band_high,
-                fillcolor=color,
-                line_width=0,
-                layer="below",
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=[None],
-                    y=[None],
-                    mode="markers",
-                    marker=dict(size=14, color=color),
-                    name=label,
+            if "Electricity" in label:
+                fig.add_hrect(
+                    y0=band_low,
+                    y1=band_high,
+                    fillcolor=color,
+                    line_width=0,
+                    layer="below",
                 )
-            )
+                fig.add_trace(
+                    go.Scatter(
+                        x=[None],
+                        y=[None],
+                        mode="markers",
+                        marker=dict(size=14, color=color),
+                        name=label,
+                    )
+                )
+            else:
+                fig.add_hline(
+                    y=band_low,
+                    line_color=color,
+                    line_width=2,
+                )
+                fig.add_hline(
+                    y=band_high,
+                    line_color=color,
+                    line_width=2,
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=[None],
+                        y=[None],
+                        mode="lines",
+                        line=dict(color=color, width=2),
+                        name=label,
+                    )
+                )
 
         fig.update_layout(
             barmode="stack",
@@ -1666,10 +1595,9 @@ with tab_overview:
 with tab_co2:
     st.subheader("")
 
-    # Locate BEV and ICEV emission columns from selected row
     bev_co2_col = find_column(
         projects.columns,
-        ["BEV CO2 Emissions (lb CO2/kWh)", "BEV CO2 Emissions", "BEV CO2", "BEV"]
+        ["CO2EmissionBEV"]
     )
     icev_co2_col = find_column(
         projects.columns,
@@ -1687,7 +1615,6 @@ with tab_co2:
         else 1.45
     )
 
-    # Pathway Calculations
     pathway_names = [
         "SMR",
         "SMRCC",
@@ -1717,7 +1644,6 @@ with tab_co2:
         g + r for g, r in zip(h2_gen_emissions, refueling_emissions)
     ]
 
-    # 1. Emissions Summary Table
     st.markdown("### Emissions Summary Table")
 
     df_emissions = pd.DataFrame({
@@ -1737,10 +1663,8 @@ with tab_co2:
 
     st.markdown("---")
 
-    # 2. Stacked Bar Chart with ICEV Line
     fig_co2_chart = go.Figure()
 
-     # Orange Stacked Bar: Refueling Station Emissions
     fig_co2_chart.add_trace(
         go.Bar(
             x=pathway_names,
@@ -1751,7 +1675,6 @@ with tab_co2:
         )
     )
 
-   # Blue Stacked Bar: Hydrogen Generation
     fig_co2_chart.add_trace(
         go.Bar(
             x=pathway_names,
@@ -1763,19 +1686,28 @@ with tab_co2:
     )
 
 
-    # Grey Line: ICEV Emissions
     fig_co2_chart.add_trace(
         go.Scatter(
             x=pathway_names,
             y=[val_icev_co2] * len(pathway_names),
             mode="lines",
             name="ICEV Emissions",
-            line=dict(color="#707070", width=3),
+            line=dict(color="#8B0000", width=3),
             hovertemplate="<b>ICEV Emissions</b>: %{y:.4f} kg CO₂/mi<extra></extra>",
         )
     )
 
-    # Add Black Bold Labels above each stacked bar
+    fig_co2_chart.add_trace(
+        go.Scatter(
+            x=pathway_names,
+            y=[val_bev_co2] * len(pathway_names),
+            mode="lines",
+            name="BEV Emissions",
+            line=dict(color="#707070", width=3),
+            hovertemplate="<b>BEV Emissions</b>: %{y:.4f} kg CO₂/mi<extra></extra>",
+        )
+    )
+
     for idx_p, p_name in enumerate(pathway_names):
         tot_val = total_pathway_emissions[idx_p]
         fig_co2_chart.add_annotation(
@@ -1834,14 +1766,12 @@ with tab_co2:
 with tab_pathway:
     st.subheader(f"")
 
-    # Pathway Selector
     selected_pathway = st.radio(
         "Select H₂ Generation Pathway:",
         ["SMR", "SMRCC", "Electrolysis"],
         horizontal=True,
     )
 
-    # Resolve LCT and LCRS costs for LCOH calculation
     lcrs_col = find_column(
         projects.columns,
         ["Levelized Cost of Refueling Stations", "LCRS", "Refueling"],
@@ -1862,9 +1792,6 @@ with tab_pathway:
     )
     deduction = cost_lcrs + cost_lct
 
-    # ==========================================================
-    # 1. RESOLVE COLUMNS & FILTER TORNADO SENSITIVITY DATA
-    # ==========================================================
     state_col_torn = find_column(tornado_df.columns, ["State", "ST"])
     path_col_torn = find_column(tornado_df.columns, ["Pathway", "Technology"])
 
@@ -1905,7 +1832,6 @@ with tab_pathway:
         filter_torn.columns, ["Variable Name", "Variable", "Parameter", "Name"]
     )
 
-    # Clean empty strings / nulls
     filter_torn = filter_torn.replace(r"^\s*$", np.nan, regex=True)
     filter_torn = filter_torn.replace(["nan", "NaN", "None", "N/A", "n/a"], np.nan)
 
@@ -1923,9 +1849,6 @@ with tab_pathway:
         sort_idx = np.argsort(swings)[::-1]
         filter_torn = filter_torn.iloc[sort_idx].reset_index(drop=True)
 
-    # ==========================================================
-    # 2. SIDE-BY-SIDE LAYOUT (TABLE + TORNADO CHART)
-    # ==========================================================
     col_table, col_chart = st.columns([1, 1.3])
 
     with col_table:
@@ -1959,7 +1882,6 @@ with tab_pathway:
         if not filter_torn.empty and avail_cols:
             df_display = filter_torn[avail_cols].dropna(subset=[var_name_col])
 
-            # Build HTML Table with increased font size and empty spacer rows between entries
             html_analysis_table = "<table style='width:100%; border-collapse: collapse; margin-top: 10px;'>"
             html_analysis_table += "<tr style='background-color: #f2f2f2; border-bottom: 2px solid #ccc;'>"
             for col_name in df_display.columns:
@@ -1975,7 +1897,6 @@ with tab_pathway:
                     html_analysis_table += f"<td style='padding: 14px 10px; text-align: center; font-size: 15pt;'>{val_str}</td>"
                 html_analysis_table += "</tr>"
 
-                # Insert row (blank spacer row) between entries
                 if i < num_rows - 1:
                     html_analysis_table += f"<tr style='height: 45px; background-color: transparent;'><td colspan='{len(df_display.columns)}' style='border: none;'></td></tr>"
 
@@ -2080,7 +2001,7 @@ with tab_pathway:
                 yaxis=dict(
                     autorange="reversed",
                     domain=[0.18, 1.0],
-                    showticklabels=False,  # Labels next to bars removed
+                    showticklabels=False, 
                 ),
                 legend=dict(orientation="h", y=1.12, x=0.7),
                 margin=dict(l=50, r=50, t=50, b=40),
@@ -2092,7 +2013,6 @@ with tab_pathway:
                 "Tornado dataset is missing required LTCH low/high columns or data."
             )
 
-    # 3. MONTE CARLO PROBABILITY HISTOGRAM
     st.markdown("")
 
     state_col_mc = find_column(mc_df.columns, ["State", "ST"])
@@ -2183,11 +2103,14 @@ with tab_pathway:
 # TAB 4: VALUES TAB (INPUTS DATASET TABLES)
 # ==========================================================
 
+# ==========================================================
+# TAB 4: VALUES TAB (INPUTS DATASET TABLES)
+# ==========================================================
+
 with tab_values:
     st.subheader("Values")
 
     if not inputs_df.empty:
-        # Detect standard columns in InputsDataset
         var_name_col_inp = find_column(inputs_df.columns, ["Variable Name", "Variable", "Name"])
         var_unit_col_inp = find_column(inputs_df.columns, ["Variable Unit", "Unit", "Units"])
         smr_col_inp = find_column(inputs_df.columns, ["SMR"])
@@ -2195,8 +2118,10 @@ with tab_values:
         elec_col_inp = find_column(inputs_df.columns, ["Electrolysis"])
         onsite_sm_col_inp = find_column(inputs_df.columns, ["Onsite SMR", "Onsite SM", "Onsite_SMR", "Onsite_SM"])
         onsite_elec_col_inp = find_column(inputs_df.columns, ["Onsite Electrolysis", "Onsite_Electrolysis"])
+        smr_liq_col_inp = find_column(inputs_df.columns, ["SMR Liquid"])
+        smrcc_liq_col_inp = find_column(inputs_df.columns, ["SMRCC Liquid"])
+        elec_liq_col_inp = find_column(inputs_df.columns, ["Electrolysis Liquid"])
 
-        # Create mapping dictionary for neat column display
         target_columns = [
             var_name_col_inp,
             var_unit_col_inp,
@@ -2205,6 +2130,9 @@ with tab_values:
             elec_col_inp,
             onsite_sm_col_inp,
             onsite_elec_col_inp,
+            smr_liq_col_inp,
+            smrcc_liq_col_inp,
+            elec_liq_col_inp
         ]
         valid_cols = [c for c in target_columns if c and c in inputs_df.columns]
 
@@ -2214,10 +2142,12 @@ with tab_values:
         if smr_col_inp: rename_map[smr_col_inp] = "SMR"
         if smrcc_col_inp: rename_map[smrcc_col_inp] = "SMRCC"
         if elec_col_inp: rename_map[elec_col_inp] = "Electrolysis"
-        if onsite_sm_col_inp: rename_map[onsite_sm_col_inp] = "Onsite SM"
+        if onsite_sm_col_inp: rename_map[onsite_sm_col_inp] = "Onsite SMR"
         if onsite_elec_col_inp: rename_map[onsite_elec_col_inp] = "Onsite Electrolysis"
+        if smr_liq_col_inp: rename_map[smr_liq_col_inp] = "SMR Liquid"
+        if smrcc_liq_col_inp: rename_map[smrcc_liq_col_inp] = "SMRCC Liquid"
+        if elec_liq_col_inp: rename_map[elec_liq_col_inp] = "Electrolysis Liquid"
 
-        # Function for flexible matching of target variable names
         def filter_dataset_by_vars(df, target_vars):
             if not var_name_col_inp or var_name_col_inp not in df.columns:
                 return pd.DataFrame()
@@ -2237,7 +2167,6 @@ with tab_values:
                 matched_df = matched_df[valid_cols].rename(columns=rename_map)
             return matched_df
 
-        # Target variables list
         assigned_variables = [
             "CO2 Production",
             "CO₂ Production",
@@ -2251,6 +2180,7 @@ with tab_values:
             "Yearly Fixed (plant)",
             "Yearly Non-Feedstock Other Variable Costs",
             "Yearly, Non-Feedstock Other Variable Costs",
+            "Annual Average Daily Dispensing Rate",
         ]
 
         financial_variables = [
@@ -2263,9 +2193,21 @@ with tab_values:
             "Target Main Equity Percentage",
         ]
 
-        # 1. Assigned Values Table
         st.markdown("### Assigned Values Table")
         df_assigned = filter_dataset_by_vars(inputs_df, assigned_variables)
+        
+        # --- INJECT HDSAM DISPENSING RATE FROM SESSION STATE ---
+        if "hdsam_results" in st.session_state and "dispensing_rate" in st.session_state.hdsam_results:
+            new_rate = st.session_state.hdsam_results["dispensing_rate"]
+            if not df_assigned.empty and "Variable Name" in df_assigned.columns:
+                # Find the row corresponding to the Dispensing Rate
+                mask = df_assigned["Variable Name"].str.contains("Dispensing Rate", case=False, na=False)
+                if mask.any():
+                    # Update all numeric pathway columns (ignore Variable Name and Unit)
+                    update_cols = [c for c in df_assigned.columns if c not in ["Variable Name", "Variable Unit"]]
+                    df_assigned.loc[mask, update_cols] = new_rate
+        # -------------------------------------------------------
+
         if not df_assigned.empty:
             st.dataframe(df_assigned, use_container_width=True, hide_index=True)
         else:
@@ -2273,9 +2215,10 @@ with tab_values:
 
         st.markdown("---")
 
-        # 2. Financial Input Values Table
+        # --- FINANCIAL TABLE ---
         st.markdown("### Financial Input Values Table")
         df_financial = filter_dataset_by_vars(inputs_df, financial_variables)
+        
         if not df_financial.empty:
             st.dataframe(df_financial, use_container_width=True, hide_index=True)
         else:
@@ -2283,7 +2226,6 @@ with tab_values:
 
     else:
         st.warning("InputsDataset.csv not found or is empty.")
-
 
 # ==========================================================
 # TAB 5: EXTERNAL HTTP SITE VIEW
@@ -2295,8 +2237,27 @@ with tab_external:
         ""
     )
 
-    # Target URL for embedded site
     target_url = "https://full-tco-app-app-kd8mb5ed2bttt9rzppjkgi.streamlit.app/?embed=true"
+
+    col_btn, col_info = st.columns([1, 4])
+    with col_btn:
+        st.link_button("Open Site in New Tab ↗", target_url)
+
+    st.markdown("---")
+
+    components.iframe(target_url, height=700, scrolling=True)
+
+# ==========================================================
+# TAB 6: EXTERNAL HTTP SITE VIEW 2
+# ==========================================================
+
+with tab_external2:
+    st.subheader("")
+    st.markdown(
+        ""
+    )
+
+    target_url = "https://drive-cycle-app-app-meugfjucfxrh2mrjvgk7co.streamlit.app/?embed=true"
 
     col_btn, col_info = st.columns([1, 4])
     with col_btn:
